@@ -1,0 +1,16 @@
+# Perfil de produção — sobrescreve as configurações padrão do application.yaml
+# Ativado com: --spring.profiles.active=prod
+
+spring:
+  jpa:
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: false
+
+# Swagger/OpenAPI desabilitado em produção
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false

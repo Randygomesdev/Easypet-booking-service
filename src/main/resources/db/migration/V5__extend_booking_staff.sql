@@ -1,0 +1,2 @@
+ALTER TABLE bookings ADD COLUMN staff_id UUID;
+ALTER TABLE bookings ADD COLUMN is_fitting_request BOOLEAN NOT NULL DEFAULT FALSE;
