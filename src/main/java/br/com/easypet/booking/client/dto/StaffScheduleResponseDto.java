@@ -8,5 +8,7 @@ public record StaffScheduleResponseDto(
     UUID staffId,
     Integer dayOfWeek,
     LocalTime startTime,
-    LocalTime endTime
+    LocalTime endTime,
+    LocalTime lunchStartTime,
+    LocalTime lunchEndTime
 ) {}
