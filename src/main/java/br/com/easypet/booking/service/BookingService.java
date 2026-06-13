@@ -198,16 +198,19 @@ public class BookingService {
                         
                 // Verificar Ausência e Escala
                 boolean absent = isStaffAbsent(chosenStaffId, bookingDate);
-                boolean inSchedule = isWithinStaffSchedule(chosenStaffId, bookingDate);
-                boolean conflict = hasStaffConflict(partnerId, chosenStaffId, bookingDate);
-                
+                ScheduleStatus schedStatus = getStaffScheduleStatus(chosenStaffId, bookingDate);
+                boolean inSchedule = schedStatus == ScheduleStatus.AVAILABLE;
+                boolean inLunch    = schedStatus == ScheduleStatus.LUNCH_BREAK;
+                boolean conflict = inSchedule && hasStaffConflict(partnerId, chosenStaffId, bookingDate);
+
                 if (absent || !inSchedule || conflict) {
                     if (isFitting) {
                         allocatedStaffId = chosenStaffId;
                         booking.setIsFittingRequest(true);
                         booking.setStatus(BookingStatus.PENDING);
                     } else {
-                        String msg = absent ? "O profissional selecionado está ausente neste horário." :
+                        String msg = absent   ? "O profissional selecionado está ausente neste horário." :
+                                     inLunch  ? "O profissional está em horário de almoço. Solicite um encaixe." :
                                      !inSchedule ? "Este horário está fora do expediente regular do profissional." :
                                      "O profissional selecionado já possui outro agendamento neste horário.";
                         throw new BusinessException(msg);
@@ -524,28 +527,31 @@ public class BookingService {
             boolean anyAbsent = false;
             boolean anyScheduleMatch = false;
             boolean anyConflict = false;
+            boolean anyLunchBreak = false;
 
             for (var staff : staffList) {
                 boolean absent = isStaffAbsent(staff.id(), slotDateTime);
-                boolean inSchedule = isWithinStaffSchedule(staff.id(), slotDateTime);
-                boolean conflict = hasStaffConflict(partnerId, staff.id(), slotDateTime);
-
-                log.info("DIAGNOSTICO: Profissional '{}' (ID: {}), absent: {}, inSchedule: {}, conflict: {}, slotTime: {}", 
-                         staff.name(), staff.id(), absent, inSchedule, conflict, slotDateTime);
+                ScheduleStatus schedStatus = getStaffScheduleStatus(staff.id(), slotDateTime);
+                boolean inSchedule = schedStatus == ScheduleStatus.AVAILABLE;
+                boolean inLunch    = schedStatus == ScheduleStatus.LUNCH_BREAK;
+                boolean conflict   = inSchedule && hasStaffConflict(partnerId, staff.id(), slotDateTime);
 
                 if (!absent && inSchedule && !conflict) {
                     availableStaff.add(staff);
                 }
-                if (absent) anyAbsent = true;
+                if (absent)   anyAbsent       = true;
                 if (inSchedule) anyScheduleMatch = true;
-                if (conflict) anyConflict = true;
+                if (conflict) anyConflict      = true;
+                if (inLunch && !absent) anyLunchBreak = true;
             }
 
             if (!availableStaff.isEmpty()) {
                 slots.add(new AvailabilitySlot(timeStr, true, availableStaff, null, null));
             } else {
                 String reason;
-                if (!anyScheduleMatch) {
+                if (anyLunchBreak && !anyConflict) {
+                    reason = "LUNCH_BREAK";
+                } else if (!anyScheduleMatch) {
                     reason = "OUT_OF_SCHEDULE";
                 } else if (anyAbsent && !anyConflict) {
                     reason = "BLOCKED_ABSENCE";
@@ -704,29 +710,37 @@ public class BookingService {
         }
     }
 
-    private boolean isWithinStaffSchedule(UUID staffId, LocalDateTime bookingDate) {
+    private enum ScheduleStatus { AVAILABLE, LUNCH_BREAK, OUT_OF_SCHEDULE }
+
+    private ScheduleStatus getStaffScheduleStatus(UUID staffId, LocalDateTime bookingDate) {
         try {
             List<br.com.easypet.booking.client.dto.StaffScheduleResponseDto> schedules = partnerServiceClient.getStaffSchedule(staffId);
-            if (schedules == null) return false;
-            
-            // Mapeia o DayOfWeek do Java (Segunda=1 ... Domingo=7) para o padrão do partner-service (Domingo=1, Segunda=2 ...)
+            if (schedules == null || schedules.isEmpty()) return ScheduleStatus.OUT_OF_SCHEDULE;
+
+            // Mapeia DayOfWeek Java (Seg=1…Dom=7) → padrão partner-service (Dom=1, Seg=2…)
             int targetDay = bookingDate.getDayOfWeek() == java.time.DayOfWeek.SUNDAY ? 1 : bookingDate.getDayOfWeek().getValue() + 1;
-            
             LocalTime targetTime = bookingDate.toLocalTime();
 
-            log.info("DIAGNOSTICO: Profissional {} tem {} escala(s). targetDay: {}, targetTime: {}", 
-                     staffId, schedules.size(), targetDay, targetTime);
             for (var s : schedules) {
-                log.info("  DIAGNOSTICO: Escala diaOfWeek: {}, startTime: {}, endTime: {}", s.dayOfWeek(), s.startTime(), s.endTime());
+                if (s.dayOfWeek() != targetDay) continue;
+                boolean withinWork = !targetTime.isBefore(s.startTime()) && targetTime.isBefore(s.endTime());
+                if (!withinWork) continue;
+                // Dentro do expediente — verificar intervalo de almoço
+                if (s.lunchStartTime() != null && s.lunchEndTime() != null &&
+                    !targetTime.isBefore(s.lunchStartTime()) && targetTime.isBefore(s.lunchEndTime())) {
+                    return ScheduleStatus.LUNCH_BREAK;
+                }
+                return ScheduleStatus.AVAILABLE;
             }
-
-            return schedules.stream()
-                    .filter(schedule -> schedule.dayOfWeek() == targetDay)
-                    .anyMatch(schedule -> !targetTime.isBefore(schedule.startTime()) && targetTime.isBefore(schedule.endTime()));
+            return ScheduleStatus.OUT_OF_SCHEDULE;
         } catch (Exception e) {
-            log.error("Erro ao verificar escala de trabalho do profissional: {}", e.getMessage());
-            return false;
+            log.error("Erro ao verificar escala do profissional {}: {}", staffId, e.getMessage());
+            return ScheduleStatus.OUT_OF_SCHEDULE;
         }
+    }
+
+    private boolean isWithinStaffSchedule(UUID staffId, LocalDateTime bookingDate) {
+        return getStaffScheduleStatus(staffId, bookingDate) == ScheduleStatus.AVAILABLE;
     }
 
     private boolean hasStaffConflict(UUID partnerId, UUID staffId, LocalDateTime bookingDate) {
