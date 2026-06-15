@@ -95,7 +95,7 @@ public class BookingService {
         } else {
             // Estado inicial padrão para pagamentos avulsos
             booking.setStatus(BookingStatus.PENDING);
-            booking.setPaymentMethod(PaymentMethod.CARD);
+            booking.setPaymentMethod(request.paymentMethod() != null ? request.paymentMethod() : PaymentMethod.CARD);
         }
 
         if (request.type() == br.com.easypet.booking.domain.enums.BookingType.BOARDING) {
