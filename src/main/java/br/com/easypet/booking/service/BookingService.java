@@ -245,23 +245,26 @@ public class BookingService {
                             .filter(b -> b.getStaffId() != null)
                             .collect(Collectors.groupingBy(Booking::getStaffId, Collectors.counting()));
                             
-                    // 3. Escolher o profissional com a menor contagem de agendamentos no dia
-                    br.com.easypet.booking.client.dto.StaffResponseDto selectedStaff = availableStaff.stream()
-                            .min(Comparator.comparing((br.com.easypet.booking.client.dto.StaffResponseDto s) -> bookingCounts.getOrDefault(s.id(), 0L))
+                    // 3. Ordenar por menor carga no dia e tentar cada staff até achar um livre
+                    List<br.com.easypet.booking.client.dto.StaffResponseDto> sortedStaff = availableStaff.stream()
+                            .sorted(Comparator.comparing((br.com.easypet.booking.client.dto.StaffResponseDto s) -> bookingCounts.getOrDefault(s.id(), 0L))
                                     .thenComparing(s -> s.id().toString()))
-                            .orElse(availableStaff.get(0));
-                            
-                    // 4. Verificar conflito de horário para o profissional selecionado
-                    if (hasStaffConflict(partnerId, selectedStaff.id(), bookingDate)) {
-                        if (isFitting) {
-                            allocatedStaffId = selectedStaff.id();
-                            booking.setIsFittingRequest(true);
-                            booking.setStatus(BookingStatus.PENDING);
-                        } else {
-                            throw new BusinessException("Todos os profissionais disponíveis estão ocupados neste horário.");
-                        }
+                            .collect(Collectors.toList());
+
+                    br.com.easypet.booking.client.dto.StaffResponseDto freeStaff = sortedStaff.stream()
+                            .filter(s -> !hasStaffConflict(partnerId, s.id(), bookingDate))
+                            .findFirst()
+                            .orElse(null);
+
+                    if (freeStaff != null) {
+                        allocatedStaffId = freeStaff.id();
+                    } else if (isFitting) {
+                        // Nenhum staff livre — registrar como encaixe no primeiro da lista
+                        allocatedStaffId = sortedStaff.get(0).id();
+                        booking.setIsFittingRequest(true);
+                        booking.setStatus(BookingStatus.PENDING);
                     } else {
-                        allocatedStaffId = selectedStaff.id();
+                        throw new BusinessException("Todos os profissionais disponíveis estão ocupados neste horário.");
                     }
                 }
             }
@@ -351,10 +354,31 @@ public class BookingService {
         Booking booking = findBookingOrThrow(id);
         validateOwnership(booking);
 
+        if (status == BookingStatus.CANCELLED) {
+            validateCancellationDeadline(booking);
+            issueCancellationCredit(booking);
+        }
+
         booking.setStatus(status);
         Booking updatedBooking = bookingRepository.save(booking);
         log.info("Status do agendamento ID: {} alterado para {}", id, status);
         return bookingMapper.toResponse(updatedBooking);
+    }
+
+    private void validateCancellationDeadline(Booking booking) {
+        LocalDateTime reference = booking.getCheckIn() != null ? booking.getCheckIn() : booking.getBookingDate();
+        if (reference != null && reference.isBefore(LocalDateTime.now().plusHours(2))) {
+            throw new BusinessException("Cancelamentos devem ser feitos com pelo menos 2 horas de antecedência.");
+        }
+    }
+
+    private void issueCancellationCredit(Booking booking) {
+        if (booking.getPaymentMethod() == PaymentMethod.PACKAGE_CREDIT && booking.getCustomerPackageId() != null) {
+            paymentServiceClient.restorePackageCredit(booking.getCustomerPackageId());
+        } else if (booking.getPrice() != null && booking.getPrice().compareTo(BigDecimal.ZERO) > 0) {
+            String reason = "Cancelamento do agendamento #" + booking.getId();
+            paymentServiceClient.addPlatformCredit(booking.getUserId(), booking.getPrice(), reason, booking.getId());
+        }
     }
 
     public void deleteBooking(UUID id) {

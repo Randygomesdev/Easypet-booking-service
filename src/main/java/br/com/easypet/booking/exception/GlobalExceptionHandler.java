@@ -1,6 +1,7 @@
 package br.com.easypet.booking.exception;
 
 import br.com.easypet.booking.dto.response.ErrorResponse;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -44,6 +45,13 @@ public class GlobalExceptionHandler {
                 errors
         );
         return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(errorResponse);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ErrorResponse> handleDataIntegrityViolation(DataIntegrityViolationException ex) {
+        log.warn("Violação de integridade de dados: {}", ex.getMostSpecificCause().getMessage());
+        ErrorResponse error = new ErrorResponse(HttpStatus.CONFLICT.value(), "Horário não disponível para este colaborador.");
+        return ResponseEntity.status(HttpStatus.CONFLICT).body(error);
     }
 
     @ExceptionHandler(Exception.class)
