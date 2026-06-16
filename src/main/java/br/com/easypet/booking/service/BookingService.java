@@ -245,23 +245,26 @@ public class BookingService {
                             .filter(b -> b.getStaffId() != null)
                             .collect(Collectors.groupingBy(Booking::getStaffId, Collectors.counting()));
                             
-                    // 3. Escolher o profissional com a menor contagem de agendamentos no dia
-                    br.com.easypet.booking.client.dto.StaffResponseDto selectedStaff = availableStaff.stream()
-                            .min(Comparator.comparing((br.com.easypet.booking.client.dto.StaffResponseDto s) -> bookingCounts.getOrDefault(s.id(), 0L))
+                    // 3. Ordenar por menor carga no dia e tentar cada staff até achar um livre
+                    List<br.com.easypet.booking.client.dto.StaffResponseDto> sortedStaff = availableStaff.stream()
+                            .sorted(Comparator.comparing((br.com.easypet.booking.client.dto.StaffResponseDto s) -> bookingCounts.getOrDefault(s.id(), 0L))
                                     .thenComparing(s -> s.id().toString()))
-                            .orElse(availableStaff.get(0));
-                            
-                    // 4. Verificar conflito de horário para o profissional selecionado
-                    if (hasStaffConflict(partnerId, selectedStaff.id(), bookingDate)) {
-                        if (isFitting) {
-                            allocatedStaffId = selectedStaff.id();
-                            booking.setIsFittingRequest(true);
-                            booking.setStatus(BookingStatus.PENDING);
-                        } else {
-                            throw new BusinessException("Todos os profissionais disponíveis estão ocupados neste horário.");
-                        }
+                            .collect(Collectors.toList());
+
+                    br.com.easypet.booking.client.dto.StaffResponseDto freeStaff = sortedStaff.stream()
+                            .filter(s -> !hasStaffConflict(partnerId, s.id(), bookingDate))
+                            .findFirst()
+                            .orElse(null);
+
+                    if (freeStaff != null) {
+                        allocatedStaffId = freeStaff.id();
+                    } else if (isFitting) {
+                        // Nenhum staff livre — registrar como encaixe no primeiro da lista
+                        allocatedStaffId = sortedStaff.get(0).id();
+                        booking.setIsFittingRequest(true);
+                        booking.setStatus(BookingStatus.PENDING);
                     } else {
-                        allocatedStaffId = selectedStaff.id();
+                        throw new BusinessException("Todos os profissionais disponíveis estão ocupados neste horário.");
                     }
                 }
             }
