@@ -10,6 +10,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.math.BigDecimal;
+import java.util.Map;
 import java.util.UUID;
 
 @Component
@@ -21,6 +23,33 @@ public class PaymentServiceClient {
 
     @Value("${services.payment-service.url:http://localhost:8085/api/v1}")
     private String paymentServiceUrl;
+
+    public void addPlatformCredit(UUID userId, BigDecimal amount, String reason, UUID bookingId) {
+        String url = paymentServiceUrl + "/payments/credits/add";
+        Map<String, Object> body = Map.of(
+                "userId", userId.toString(),
+                "amount", amount,
+                "reason", reason,
+                "bookingId", bookingId != null ? bookingId.toString() : null
+        );
+        try {
+            restTemplate.postForObject(url, body, Void.class);
+            log.info("Crédito de plataforma adicionado: userId={} amount={}", userId, amount);
+        } catch (Exception e) {
+            log.error("Erro ao adicionar crédito de plataforma: {}", e.getMessage());
+        }
+    }
+
+    public void restorePackageCredit(UUID customerPackageId) {
+        String url = paymentServiceUrl + "/payments/credits/packages/restore";
+        Map<String, Object> body = Map.of("customerPackageId", customerPackageId.toString());
+        try {
+            restTemplate.postForObject(url, body, Void.class);
+            log.info("Crédito de pacote restaurado: customerPackageId={}", customerPackageId);
+        } catch (Exception e) {
+            log.error("Erro ao restaurar crédito de pacote: {}", e.getMessage());
+        }
+    }
 
     public CreditConsumeResponse consumeCredit(UUID userId, UUID partnerId, UUID serviceId) {
         String url = paymentServiceUrl + "/payments/packages/consume";

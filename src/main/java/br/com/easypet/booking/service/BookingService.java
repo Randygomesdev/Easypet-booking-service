@@ -354,10 +354,31 @@ public class BookingService {
         Booking booking = findBookingOrThrow(id);
         validateOwnership(booking);
 
+        if (status == BookingStatus.CANCELLED) {
+            validateCancellationDeadline(booking);
+            issueCancellationCredit(booking);
+        }
+
         booking.setStatus(status);
         Booking updatedBooking = bookingRepository.save(booking);
         log.info("Status do agendamento ID: {} alterado para {}", id, status);
         return bookingMapper.toResponse(updatedBooking);
+    }
+
+    private void validateCancellationDeadline(Booking booking) {
+        LocalDateTime reference = booking.getCheckIn() != null ? booking.getCheckIn() : booking.getBookingDate();
+        if (reference != null && reference.isBefore(LocalDateTime.now().plusHours(2))) {
+            throw new BusinessException("Cancelamentos devem ser feitos com pelo menos 2 horas de antecedência.");
+        }
+    }
+
+    private void issueCancellationCredit(Booking booking) {
+        if (booking.getPaymentMethod() == PaymentMethod.PACKAGE_CREDIT && booking.getCustomerPackageId() != null) {
+            paymentServiceClient.restorePackageCredit(booking.getCustomerPackageId());
+        } else if (booking.getPrice() != null && booking.getPrice().compareTo(BigDecimal.ZERO) > 0) {
+            String reason = "Cancelamento do agendamento #" + booking.getId();
+            paymentServiceClient.addPlatformCredit(booking.getUserId(), booking.getPrice(), reason, booking.getId());
+        }
     }
 
     public void deleteBooking(UUID id) {
