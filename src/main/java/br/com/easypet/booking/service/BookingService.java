@@ -72,6 +72,10 @@ public class BookingService {
         UUID currentUserId = getCurrentUserId();
         booking.setUserId(currentUserId);
 
+        // Rastreia se um crédito de pacote foi debitado nesta chamada, para
+        // compensar (estornar) caso a criação do agendamento falhe adiante.
+        UUID consumedPackageId = null;
+
         // Interceptar se o pagamento for via crédito de pacote pré-pago
         if (request.paymentMethod() == PaymentMethod.PACKAGE_CREDIT) {
             log.info("Processando pagamento via crédito de pacote para o usuário: {}", currentUserId);
@@ -84,6 +88,7 @@ public class BookingService {
                     currentUserId, request.partnerId(), request.serviceId());
             
             if (consumeResponse != null && consumeResponse.success()) {
+                consumedPackageId = consumeResponse.customerPackageId();
                 booking.setCustomerPackageId(consumeResponse.customerPackageId());
                 booking.setPaymentMethod(PaymentMethod.PACKAGE_CREDIT);
                 booking.setStatus(BookingStatus.CONFIRMED); // Agendamento pré-pago é CONFIRMED direto
@@ -97,6 +102,10 @@ public class BookingService {
             booking.setStatus(BookingStatus.PENDING);
             booking.setPaymentMethod(request.paymentMethod() != null ? request.paymentMethod() : PaymentMethod.CARD);
         }
+
+        // A partir daqui qualquer falha (validação, conflito de horário, 409 do
+        // índice único, etc.) deve estornar o crédito já debitado, se houver.
+        try {
 
         if (request.type() == br.com.easypet.booking.domain.enums.BookingType.BOARDING) {
             log.info("Validando agendamento de hospedagem/creche...");
@@ -272,9 +281,24 @@ public class BookingService {
             booking.setStaffId(allocatedStaffId);
         }
 
-        Booking savedBooking = bookingRepository.save(booking);
+        // saveAndFlush força o INSERT imediatamente, garantindo que a violação
+        // do índice único (409) seja lançada aqui dentro do try — e não apenas
+        // no commit, fora do alcance da compensação abaixo.
+        Booking savedBooking = bookingRepository.saveAndFlush(booking);
         log.info("Agendamento criado com sucesso! ID: {}", savedBooking.getId());
         return bookingMapper.toResponse(savedBooking);
+
+        } catch (RuntimeException ex) {
+            // Compensação: o crédito do pacote já foi debitado no payment-service
+            // (transação de outro microserviço, já commitada), mas a criação do
+            // agendamento falhou. Estorna o crédito para não deixá-lo órfão.
+            if (consumedPackageId != null) {
+                log.warn("Falha ao criar agendamento após débito de crédito. Estornando crédito do pacote {}: {}",
+                        consumedPackageId, ex.getMessage());
+                paymentServiceClient.restorePackageCredit(consumedPackageId);
+            }
+            throw ex;
+        }
     }
 
     @Transactional(readOnly = true)
